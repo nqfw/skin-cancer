@@ -1,0 +1,35 @@
+# --- Python & Environment ---
+venv/
+env/
+.venv/
+.env
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Datasets & Medical Images ---
+# These are too large for GitHub (HAM10000 is ~2.6GB)
+data/
+images/
+raw_data/
+*.jpg
+*.jpeg
+*.png
+*.zip
+
+# --- Jupyter Notebooks & Caches ---
+.ipynb_checkpoints
+.pytest_cache/
+.mypy_cache/
+
+# --- IDE & OS Clutter ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Model Artifacts ---
+# Don't commit massive .h5 or .pth files unless you use Git LFS
+*.h5
+*.pth
+*.pkl
