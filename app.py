@@ -6,6 +6,7 @@ import numpy as np
 import torchvision.transforms as transforms
 from PIL import Image
 import sys
+import pandas as pd
 
 # Add local paths for modules
 sys.path.append(os.path.join(os.getcwd(), "core"))
@@ -16,19 +17,21 @@ from model import get_resnet50_model
 from dullrazor import apply_dullrazor
 from gradcam_engine import generate_cam
 from skintone import estimate_skin_tone
+from skin import process_image
 
 # --- Configuration ---
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 CLASS_MAP = {0: 'nv', 1: 'mel', 2: 'bkl', 3: 'bcc', 4: 'akiec', 5: 'vasc', 6: 'df'}
 FULL_NAMES = {
-    'nv': 'Melanocytic Nevi',
-    'mel': 'Melanoma',
-    'bkl': 'Benign Keratosis-like Lesions',
-    'bcc': 'Basal Cell Carcinoma',
-    'akiec': 'Actinic Keratoses',
-    'vasc': 'Vascular Lesions',
-    'df': 'Dermatofibroma'
+    'nv': 'Melanocytic Nevi (Mole)',
+    'mel': 'Melanoma (Cancerous)',
+    'bkl': 'Benign Keratosis (Age Spots)',
+    'bcc': 'Basal Cell Carcinoma (Cancerous)',
+    'akiec': 'Actinic Keratoses (Pre-cancerous)',
+    'vasc': 'Vascular Lesions (Blood vessels)',
+    'df': 'Dermatofibroma (Benign)'
 }
+ORBS_DIR = r"C:\Users\lenovo\OneDrive\Desktop\HACKATHON\data\MST Orbs"
 
 # --- Utility Functions ---
 @st.cache_resource
@@ -58,165 +61,231 @@ def preprocess_for_model(img_bgr):
     ])
     return transform(img_rgb).unsqueeze(0).to(DEVICE)
 
+@st.cache_data
+def load_metadata():
+    csv_path = r"C:\Users\lenovo\OneDrive\Desktop\HACKATHON\data\HAM10000 dataset\HAM10000_metadata.csv"
+    if os.path.exists(csv_path):
+        return pd.read_csv(csv_path)
+    return None
+
+def resolve_actual_diagnosis(filename, df_metadata):
+    # 1. Check for Fitzpatrick naming convention (e.g., "mel_0a7d...")
+    possible_prefix = filename.split('_')[0].lower()
+    if possible_prefix in CLASS_MAP.values():
+        return possible_prefix.upper()
+    
+    # 2. Check HAM10000 CSV (e.g., "ISIC_0024306")
+    img_id = os.path.splitext(filename)[0]
+    if df_metadata is not None:
+        match = df_metadata.loc[df_metadata['image_id'] == img_id, 'dx']
+        if not match.empty:
+            return match.values[0].upper()
+            
+    return "UNKNOWN"
+
 # --- UI Setup ---
 st.set_page_config(page_title="DermaTrace.ai", layout="wide", page_icon="🔬")
 
-# Custom CSS for "Skinny" and Refined look
+# Custom CSS for "Skinny", Refined, and Dark-Grey look
 st.markdown("""
 <style>
-    .main {
-        background-color: #f8f9fa;
+    .stApp {
+        background-color: #1a1a1a;
+        color: #e0e0e0;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #212121;
+        border-right: 1px solid #333;
+    }
+    .main .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 1rem;
+        max-width: 1000px;
     }
     .stTitle {
-        font-family: 'Inter', sans-serif;
-        font-weight: 800;
-        color: #1a1a1a;
-        font-size: 3rem !important;
-        margin-bottom: 0px;
+        font-family: 'Outfit', sans-serif;
+        font-weight: 700;
+        background: linear-gradient(90deg, #ffffff, #aaaaaa);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 2.5rem !important;
+        margin-bottom: 0.5rem;
     }
     .stSubheader {
-        font-family: 'Inter', sans-serif;
-        font-weight: 600;
-        color: #333;
+        font-size: 1.2rem !important;
+        color: #cccccc !important;
+        margin-top: 1rem;
     }
-    .metric-card {
-        background-color: white;
-        padding: 1.5rem;
-        border-radius: 12px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        border: 1px solid #eee;
+    .metric-container {
+        background: #262626;
+        padding: 1rem;
+        border-radius: 10px;
+        border: 1px solid #333;
+        margin-bottom: 1rem;
     }
-    .sidebar .sidebar-content {
-        background-image: linear-gradient(#2e7bcf,#2e7bcf);
-        color: white;
+    .metric-label { font-size: 0.8rem; color: #888; }
+    .metric-value { font-size: 1.2rem; font-weight: bold; color: #fff; }
+    
+    .stAlert {
+        background-color: #2d2d2d !important;
+        color: #ffffff !important;
+        border: 1px solid #444 !important;
     }
     .stButton>button {
-        width: 100%;
-        border-radius: 8px;
-        height: 3em;
-        background-color: #1a1a1a;
-        color: white;
+        background-color: #333 !important;
+        color: white !important;
+        border: 1px solid #555 !important;
     }
 </style>
-""", unsafe_allow_index=True)
+""", unsafe_allow_html=True)
 
 # --- Sidebar ---
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/2861/2861445.png", width=60)
+    st.image("https://cdn-icons-png.flaticon.com/512/2861/2861445.png", width=50)
     st.title("DermaTrace.ai")
-    st.markdown("*Precision Dermatology AI*")
     st.markdown("---")
     
-    st.subheader("🛠️ Model Configuration")
-    model_type = st.radio(
-        "Select Pipeline Mode",
-        ["Clinical (HAM10000)", "Non-Clinical (Fitzpatrick)"],
-        help="Switch between the base medical model and the bias-corrected tone model."
+    st.subheader("⚙️ Settings")
+    model_choice = st.toggle("Switch to Bias-Corrected (Fitzpatrick)", value=False)
+    model_type = "Non-Clinical (Fitzpatrick)" if model_choice else "Clinical (HAM10000)"
+    
+    st.markdown("---")
+    uploaded_file = st.file_uploader("Upload Lesion Image", type=['jpg', 'png', 'jpeg'])
+    
+    st.markdown("---")
+    st.subheader("📊 Ground Truth")
+    actual_label_name = st.selectbox(
+        "Label for Comparison",
+        ["Auto-Detect (Filename/CSV)"] + list(FULL_NAMES.values()),
+        help="If Auto-Detect is on, the system will try to find the label in the filename or metadata CSV."
     )
     
     st.markdown("---")
-    uploaded_file = st.file_uploader("📤 Upload Lesion Scan", type=['jpg', 'png', 'jpeg'])
-    
-    st.markdown("---")
-    if st.button("🚀 Launch FiftyOne Audit"):
-        st.info("Attempting to connect to Audit Session...")
-        # Placeholder for system call if needed, but usually just a link or info
-        st.markdown("[Open Audit Dashboard](http://localhost:5151)")
+    if st.button("FiftyOne Audit Hub"):
+        st.info("Directing to Audit Cluster...")
+        st.markdown("[Open Dashboard](http://localhost:5151)")
 
-# --- Load Model Based on Selection ---
-if "Clinical" in model_type:
+# --- Logic for Model Path ---
+if not model_choice:
     weights_path = r"C:\Users\lenovo\OneDrive\Desktop\HACKATHON\models\melanoma_finetuned.pth"
+    benchmark_top1 = "68.0%"
     benchmark_top2 = "77.8%"
-    benchmark_f1 = "0.693"
-    desc = "Trained on clinical-grade dermatoscopy. Highest accuracy for controlled lighting."
+    desc = "High-fidelity base model."
 else:
     weights_path = r"C:\Users\lenovo\OneDrive\Desktop\HACKATHON\models\fitzpatrick_weights.pth"
+    benchmark_top1 = "41.0%"
     benchmark_top2 = "57.5%"
-    benchmark_f1 = "0.335"
-    desc = "Fine-tuned for skin tone diversity. Corrects bias in pigmentation detection."
+    desc = "Tone-aware bias-corrected engine."
 
 model = load_model(weights_path)
 target_layer = model.layer4[-1]
+df_metadata = load_metadata()
 
 # --- Main Page Layout ---
 st.title("DermaTrace.ai")
-st.markdown(f"**Current Engine:** {model_type} | {desc}")
+st.markdown(f"**Engine:** `{model_type}` | {desc}")
 
 if uploaded_file is not None:
-    # 1. Read and Initial Preprocess
+    # 1. Image Loading
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     image = cv2.imdecode(file_bytes, 1)
     
-    # 2. Pipeline Execution
-    cropped = center_crop_image(image)
-    cleaned = apply_dullrazor(cropped)
+    # 2. Pre-Verification: Skin Detection
+    is_skin, coverage, skin_mask, _ = process_image(image)
     
-    # MST Tone Scoring
-    mst_score = estimate_skin_tone(image) # 1-10
-    
-    # Inference
-    input_tensor = preprocess_for_model(cleaned)
-    with torch.no_grad():
-        outputs = model(input_tensor)
-        probs = torch.nn.functional.softmax(outputs, dim=1)
-        top_probs, top_preds = torch.topk(probs, 2, dim=1)
+    proceed = True
+    if not is_skin:
+        st.warning(f"⚠️ **FLAGGED**: System detected low skin coverage ({coverage:.1f}%). Image might be non-skin.")
+        proceed = st.checkbox("Proceed despite warning (Confirmed skin lesion)")
         
-    p1_idx = top_preds[0][0].item()
-    p2_idx = top_preds[0][1].item()
-    p1_name = CLASS_MAP[p1_idx]
-    p1_prob = top_probs[0][0].item()
-    p2_name = CLASS_MAP[p2_idx]
-    p2_prob = top_probs[0][1].item()
-    
-    # Grad-CAM Heatmap
-    heatmap = generate_cam(model, target_layer, input_tensor, cleaned)
-    
-    # --- Metrics Bar ---
-    st.markdown("---")
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.metric("Primary Diagnosis", p1_name.upper())
-    with m2:
-        st.metric("Confidence", f"{p1_prob*100:.1f}%")
-    with m3:
-        st.metric("Batch Top-2 Benchmark", benchmark_top2)
-    with m4:
-        st.metric("Weighted F1 Score", benchmark_f1)
-        
-    st.markdown("---")
-    
-    # --- Visual Comparison ---
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.subheader("📸 Original Scan")
-        st.image(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB), use_container_width=True)
-        # MST Orb display
-        orb_path = os.path.join(r"C:\Users\lenovo\OneDrive\Desktop\HACKATHON\data\MST Orbs", f"MST_{mst_score}.png")
-        if os.path.exists(orb_path):
-            st.image(orb_path, width=80, caption=f"Detected Tone: MST {mst_score}")
+    if proceed:
+        # 3. Pipeline Execution
+        if model_choice:
+            # Fitzpatrick images often have heavy surrounds, so we crop to the center
+            cropped = center_crop_image(image)
+        else:
+            # HAM10000 images are clinical patches; we resize the full frame to avoid losing data
+            cropped = cv2.resize(image, (224, 224))
             
-    with c2:
-        st.subheader("🧹 DullRazor Cleaned")
-        st.image(cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB), use_container_width=True)
-        st.caption("Morphological hair & artifact removal active.")
-
-    with c3:
-        st.subheader("🔥 Interpretability")
-        st.image(cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB), use_container_width=True)
-        st.caption("Heatmap shows focal points for AI diagnosis.")
+        cleaned = apply_dullrazor(cropped)
+        mst_score = estimate_skin_tone(image)
         
-    # --- Deep Analysis ---
-    st.markdown("---")
-    st.subheader("📑 Diagnostic Detail")
-    st.write(f"The model has identified a potential match for **{FULL_NAMES[p1_name]}** with **{p1_prob*100:.2f}%** certainty.")
-    st.write(f"Second Most Likely: **{FULL_NAMES[p2_name]}** ({p2_prob*100:.1f}%)")
-    
-    if p1_name in ['mel', 'bcc', 'akiec']:
-        st.error("⚠️ HIGH RISK: The AI has flagged this as a potentially malignant lesion. Please consult a dermatologist immediately.")
-    else:
-        st.success("✅ LOW RISK: The AI identifies this as likely benign, though professional consultation is always recommended.")
+        # Inference
+        input_tensor = preprocess_for_model(cleaned)
+        with torch.no_grad():
+            outputs = model(input_tensor)
+            probs = torch.nn.functional.softmax(outputs, dim=1)
+            top_probs, top_preds = torch.topk(probs, 2, dim=1)
+            
+        p1_idx = top_preds[0][0].item()
+        p2_idx = top_preds[0][1].item()
+        p1_name = CLASS_MAP[p1_idx].upper()
+        p2_name = CLASS_MAP[p2_idx].upper()
+        conf = top_probs[0][0].item() * 100
+        
+        # 4. Resolve Actual Diagnosis
+        auto_val = resolve_actual_diagnosis(uploaded_file.name, df_metadata)
+        
+        if actual_label_name == "Auto-Detect (Filename/CSV)":
+            actual_val = auto_val
+            match_source = "Auto"
+        else:
+            # Manual selection override
+            inv_names = {v: k for k, v in FULL_NAMES.items()}
+            actual_val = inv_names[actual_label_name].upper()
+            match_source = "Manual"
+            
+        # --- Top Metrics Bar ---
+        st.markdown("---")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Predicted", p1_name)
+        m2.metric("Actual", f"{actual_val} ({match_source})")
+        m3.metric("Conf.", f"{conf:.1f}%")
+        m4.metric("Top-2 Eval", benchmark_top2)
+            
+        st.markdown("---")
+        
+        # --- Visual Analysis ---
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.subheader("Input")
+            st.image(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB), use_container_width=True)
+            # MST Orb Path
+            orb_file = f"MST_{mst_score}.png"
+            orb_path = os.path.join(ORBS_DIR, orb_file)
+            if os.path.exists(orb_path):
+                st.image(Image.open(orb_path), width=100, caption=f"Skin Tone Analysis: MST {mst_score}")
+                
+        with c2:
+            st.subheader("Cleaned")
+            st.image(cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB), use_container_width=True)
+            st.caption("Morphological hair removal active.")
+            
+        with c3:
+            st.subheader("Explainability")
+            heatmap = generate_cam(model, target_layer, input_tensor, cleaned)
+            st.image(cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB), use_container_width=True)
+            st.caption("Grad-CAM visualization of feature focus.")
+            
+        # --- Diagnostic Readout ---
+        st.markdown("---")
+        st.subheader("📖 Diagnostic Summary")
+        
+        risk = "HIGH" if p1_name.lower() in ['mel', 'bcc', 'akiec'] else "LOW"
+        color = "#ff4b4b" if risk == "HIGH" else "#2eb82e"
+        
+        st.markdown(f"The system identifies a <span style='color:{color}; font-weight:bold;'>{risk} RISK</span> potential match:", unsafe_allow_html=True)
+        st.markdown(f"**Primary Diagnosis:** {FULL_NAMES[p1_name.lower()]}")
+        st.markdown(f"**Secondary Diagnosis:** {FULL_NAMES[p2_name.lower()]} (Confidence: {top_probs[0][1].item()*100:.1f}%)")
+        
+        if risk == "HIGH":
+            st.error("⚠️ ACTION REQUIRED: Clinical evaluation by a dermatologist is strongly advised.")
+        else:
+            st.success("✅ OBSERVATION: Likely benign, monitor for changes using the ABCDE rule.")
 
 else:
+    st.info("👋 **Welcome to DermaTrace.ai.** Upload a high-resolution lesion scan in the sidebar to initiate diagnostic analysis.")
+    st.image("https://i.imgur.com/vHqY7Zq.png", use_container_width=True)
     # Landing State
     st.info("👋 Welcome to DermaTrace.ai. Please upload a high-resolution lesion image in the sidebar to begin analysis.")
     st.image("https://i.imgur.com/vHqY7Zq.png", use_container_width=True) # Placeholder dashboard graphic
