@@ -104,8 +104,9 @@ def train_model(epochs=3, batch_size=1, experimental_limit=1):
     
     # 5. Setup Weighted Loss function
     # 'nv': 0, 'mel': 1, 'bkl': 2, 'bcc': 3, 'akiec': 4, 'vasc': 5, 'df': 6
-    # We heavily penalize the model for missing 'mel' (1) and 'bcc' (3)
-    class_weights = torch.tensor([1.0, 10.0, 1.0, 10.0, 1.0, 1.0, 1.0]).to(device)
+    # We softly penalize the model for missing 'mel' (1) and 'bcc' (3)
+    # Lowered from 10.0x to 2.0x to prevent continuous Melanoma false-positives
+    class_weights = torch.tensor([1.0, 2.0, 1.0, 2.0, 1.0, 1.0, 1.0]).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     
     optimizer = optim.Adam(model.parameters(), lr=0.0001)
@@ -168,4 +169,6 @@ def train_model(epochs=3, batch_size=1, experimental_limit=1):
     print("\nTraining Complete!")
 
 if __name__ == "__main__":
-    train_model(epochs=3, batch_size=16, experimental_limit=2000)
+    # Increased epochs from 3 to 10 so the model has enough time to learn shapes and features
+    # Increased dataset size from 2000 to 5000 for better generalization
+    train_model(epochs=10, batch_size=16, experimental_limit=5000)
