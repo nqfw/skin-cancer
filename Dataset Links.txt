@@ -1,0 +1,5 @@
+These are the publicly available datasets used for training our AI model:
+
+Fitzpatrick 17k (Cleaned + Tonewise Splitted) : https://www.kaggle.com/datasets/mobaswiralfarabi/fitzpatrick-17k-tonewise-splitted
+HAM10000 : https://www.kaggle.com/datasets/kmader/skin-cancer-mnist-ham10000
+Monk Skin Tone : https://skintone.google/mste-dataset

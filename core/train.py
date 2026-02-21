@@ -51,10 +51,10 @@ class HAM10000Dataset(Dataset):
             idx = (idx + 1) % len(self.df)
             
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        # 3. Apply DullRazor & Ruler Mask (as requested)
-        # Note: Doing this per-frame slows down training but creates clean training data!
-        image = apply_dullrazor(image)
+        # Temporarily removing DullRazor from the live training loop because 
+        # doing heavy morphological math on the CPU for every frame causes a massive bottleneck.
+        # Ideally, we would pre-process the entire dataset once offline.
+        # image = apply_dullrazor(image)
         
         # 4. Grab Label
         label_str = self.df.loc[idx, 'dx']
@@ -105,7 +105,6 @@ def train_model(epochs=3, batch_size=1, experimental_limit=1):
     # 5. Setup Weighted Loss function
     # 'nv': 0, 'mel': 1, 'bkl': 2, 'bcc': 3, 'akiec': 4, 'vasc': 5, 'df': 6
     # We softly penalize the model for missing 'mel' (1) and 'bcc' (3)
-    # Lowered from 10.0x to 2.0x to prevent continuous Melanoma false-positives
     class_weights = torch.tensor([1.0, 2.0, 1.0, 2.0, 1.0, 1.0, 1.0]).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     
@@ -169,6 +168,5 @@ def train_model(epochs=3, batch_size=1, experimental_limit=1):
     print("\nTraining Complete!")
 
 if __name__ == "__main__":
-    # Increased epochs from 3 to 10 so the model has enough time to learn shapes and features
-    # Increased dataset size from 2000 to 5000 for better generalization
+    # Test on a small but representative subset before full 10k training
     train_model(epochs=10, batch_size=16, experimental_limit=5000)

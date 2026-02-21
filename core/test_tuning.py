@@ -52,12 +52,13 @@ def run_gradcam_demo(image_path, model=None, true_label=None):
     # Run Inference to get the predicted disease
     with torch.no_grad():
         outputs = model(input_tensor)
-        _, preds = torch.max(outputs, 1)
+        probs = torch.nn.functional.softmax(outputs, dim=1)
+        top_probs, top_preds = torch.topk(probs, 2, dim=1)
         
     rev_map = {0:'nv', 1:'mel', 2:'bkl', 3:'bcc', 4:'akiec', 5:'vasc', 6:'df'}
-    predicted_diagnosis = rev_map[preds[0].item()]
+    top2_diagnoses = [rev_map[top_preds[0][0].item()], rev_map[top_preds[0][1].item()]]
     
-    return predicted_diagnosis, true_label
+    return top2_diagnoses, true_label
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -84,11 +85,17 @@ if __name__ == "__main__":
 
         images = glob.glob(os.path.join(path, "*.jpg"))
         
-        # Test exactly 20 images
-        sample_size = min(20, len(images))
+        # Test exactly 1000 images
+        sample_size = min(1000, len(images))
         print(f"\n--- Model Blind Test ({sample_size} random images) ---")
         
-        correct = 0
+        from sklearn.metrics import f1_score
+        
+        correct_top1 = 0
+        correct_top2 = 0
+        all_true = []
+        all_pred = []
+        
         for img_path in random.sample(images, sample_size):
             img_id = os.path.splitext(os.path.basename(img_path))[0]
             true_label = "unknown"
@@ -98,17 +105,41 @@ if __name__ == "__main__":
                     true_label = matches[0]
             
             # Run without visual output
-            pred, true = run_gradcam_demo(img_path, model=test_model, true_label=true_label)
+            top2_pred, true = run_gradcam_demo(img_path, model=test_model, true_label=true_label)
             
-            if pred is None: continue
+            if top2_pred is None: continue
             
-            # Terminal printout
-            match_status = "[MATCH]" if pred == true else "[FAIL]"
-            if pred == true: correct += 1
+            if top2_pred == "healthy":
+                pred1 = "healthy"
+                pred2 = "healthy"
+            else:
+                pred1 = top2_pred[0]
+                pred2 = top2_pred[1]
+                
+            all_true.append(true)
+            all_pred.append(pred1)
             
-            print(f"{match_status} | Predicted: {str(pred).upper():5s} | Actual: {str(true).upper():5s} | {img_id}")
+            match_status = "[FAIL]"
+            if pred1 == true: 
+                correct_top1 += 1
+                correct_top2 += 1
+                match_status = "[TOP-1 MATCH]"
+            elif pred2 == true:
+                correct_top2 += 1
+                match_status = "[TOP-2 MATCH]"
             
-        acc = (correct / sample_size) * 100
-        print(f"\nEvaluation Complete: {acc:.1f}% Accuracy on this subset.")
+            print(f"{match_status:13s} | Top1: {str(pred1).upper():5s} | Top2: {str(pred2).upper():5s} | Actual: {str(true).upper():5s} | {img_id}")
+            
+        if len(all_true) > 0:
+            acc_top1 = (correct_top1 / len(all_true)) * 100
+            acc_top2 = (correct_top2 / len(all_true)) * 100
+            f1 = f1_score(all_true, all_pred, average='weighted', zero_division=0)
+            
+            print(f"\nEvaluation Complete ({len(all_true)} valid images):")
+            print(f"Top-1 Accuracy: {acc_top1:.1f}%")
+            print(f"Top-2 Accuracy: {acc_top2:.1f}%")
+            print(f"Weighted F1-Score: {f1:.4f}")
+        else:
+            print("No valid images processed.")
     else:
         print("Please provide a directory path.")

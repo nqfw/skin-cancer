@@ -11,7 +11,7 @@ from skin import process_image
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.model import get_resnet50_model
 
-def run_gradcam_demo(image_path, model=None, true_label=None):
+def run_gradcam_demo(image_path, model=None, true_label=None, use_fitzpatrick_model=False):
     # 1. Load image
     img = cv2.imread(image_path)
     if img is None:
@@ -58,12 +58,18 @@ def run_gradcam_demo(image_path, model=None, true_label=None):
         print("Loading Finetuned ResNet50...")
         model, _ = get_resnet50_model(num_classes=7)
         
-        weights_path = r"C:\Users\lenovo\OneDrive\Desktop\HACKATHON\models\melanoma_finetuned.pth"
+        if use_fitzpatrick_model:
+            weights_path = r"C:\Users\lenovo\OneDrive\Desktop\HACKATHON\models\fitzpatrick_weights.pth"
+            model_name = "Fitzpatrick17k"
+        else:
+            weights_path = r"C:\Users\lenovo\OneDrive\Desktop\HACKATHON\models\melanoma_finetuned.pth"
+            model_name = "HAM10000"
+            
         if os.path.exists(weights_path):
             model.load_state_dict(torch.load(weights_path))
-            print("Successfully loaded custom Hackathon weights!")
+            print(f"Successfully loaded {model_name} Hackathon weights!")
         else:
-            print("Warning: Custom weights not found, falling back to base ImageNet weights.")
+            print(f"Warning: Custom weights not found at {weights_path}, falling back to base ImageNet weights.")
             
         model.eval()
     
